@@ -1,13 +1,17 @@
 
 #include <core/Simulator.h>
+#include <core/Architecture.h>
+#include <bits/stdc++.h>
+using namespace std;
 
 namespace core {
 
-    /* AUXILIARY FUNCTIONS */
+    bool RowConfig = true;
+    bool ColConfig = false;
 
     template <typename T>
     void check_result(const OutputTensor &sim_output, const std::shared_ptr<base::Array<T>> &act,
-            const std::shared_ptr<base::Array<T>> &wgt, uint64_t Ox, uint64_t Oy, int stride, bool _3dim, bool diffy) {
+                      const std::shared_ptr<base::Array<T>> &wgt, uint64_t Ox, uint64_t Oy, int stride, bool _3dim, bool diffy) {
 
         const std::vector<size_t> &act_shape = act->getShape();
         const std::vector<size_t> &wgt_shape = wgt->getShape();
@@ -26,7 +30,7 @@ namespace core {
         auto filters_per_group = num_filters / groups;
 
         OutputTensor output = OutputTensor(num_filters, std::vector<std::vector<double>>(Ox,
-                std::vector<double>(Oy, 0)));
+                                                                                         std::vector<double>(Oy, 0)));
 
         // Actual convolution
         for (int r = 0; r < R; ++r) {
@@ -56,11 +60,11 @@ namespace core {
                                     auto y_window = stride * y;
 
                                     auto act_bits = _3dim ? act->get(0, r, k) :
-                                            act->get(0, start_group + k, x_window + i, y_window + j);
+                                                    act->get(0, start_group + k, x_window + i, y_window + j);
 
                                     if (diffy && !_3dim) {
                                         auto prev_act_bits = (x_window - stride < 0) ? 0 :
-                                                act->get(0, start_group + k, x_window + i - stride, y_window + j);
+                                                             act->get(0, start_group + k, x_window + i - stride, y_window + j);
                                         act_bits = (short)act_bits - (short)prev_act_bits;
                                     }
 
@@ -88,43 +92,7 @@ namespace core {
             }
         }
     }
-
-    template <typename T>
-    void calculate_output(OutputTensor &output, const TilesData<T> &tiles_data) {
-
-        for (const auto &tile_data : tiles_data.data) {
-
-            if (!tile_data.valid)
-                continue;
-
-            for (int w = 0; w < tile_data.windows.size(); ++w) {
-                auto window_idx = w * tile_data.lanes;
-                auto x_window = std::get<0>(tile_data.windows[w]);
-                auto y_window = std::get<1>(tile_data.windows[w]);
-
-                for (int f = 0; f < tile_data.filters.size(); ++f) {
-                    auto filter_idx = f * tile_data.lanes;
-                    auto filter = tile_data.filters[f];
-
-                    for (int lane = 0; lane < tile_data.lanes; ++lane) {
-
-                        auto wgt_bits = std::get<0>(tile_data.wgt_row[filter_idx + lane]);
-                        auto time_h = (std::get<1>(tile_data.wgt_row[filter_idx + lane]) - tile_data.time);
-                        auto lane_d = std::get<2>(tile_data.wgt_row[filter_idx + lane]);
-
-                        if (time_h < 0) continue;
-
-                        auto act_bits = std::get<0>(tile_data.act_row[time_h][window_idx + lane_d]);
-
-                        output[filter][x_window][y_window] += act_bits * wgt_bits;
-
-                    } // Multiply 16 weights and 16 activations values
-                } // Filter
-            } // Window
-        } // Tiles
-
-    }
-
+   
     /* CYCLES */
 
     template <typename T>
@@ -141,280 +109,476 @@ namespace core {
         auto ppu = control->getPPU();
         auto arch = control->getArch();
 
+        //paria
+        float primaryRow = arch->primaryRow();
+        float primaryColumn = arch->primaryColumn();
+        float primaryLane = arch->primaryLane();
+
         if(!QUIET) std::cout << "Starting cycles simulation for architecture " << arch->name() << std::endl;
 
-        // Initialize statistics
-        std::string filename = arch->name() + gbuffer->filename() + arch->filename() + "_cycles";
-
-        auto batch_size = this->FAST_MODE ? 1 : network.getBatchSize();
-        sys::Stats stats = sys::Stats(network.getNumLayers(), batch_size, filename);
-
-        // Time stats
-        auto cycles = stats.register_uint_t("cycles", 0, sys::AverageTotal);
-        auto compute_cycles = stats.register_uint_t("compute_cycles", 0, sys::AverageTotal);
-
-        // Architecture stats
-        auto scheduled_pe = stats.register_uint_t("scheduled PEs", 0, sys::AverageTotal);
-        auto idle_pe = stats.register_uint_t("idle PEs", 0, sys::AverageTotal);
-
-        // DRAM stats
-        auto dram_act_reads = stats.register_uint_t("dram_act_reads", 0, sys::AverageTotal);
-        auto dram_psum_reads = stats.register_uint_t("dram_psum_reads", 0, sys::AverageTotal);
-        auto dram_wgt_reads = stats.register_uint_t("dram_wgt_reads", 0, sys::AverageTotal);
-        auto dram_out_writes = stats.register_uint_t("dram_out_writes", 0, sys::AverageTotal);
-
-        // Global Buffer stats
-        auto gbuffer_act_reads = std::vector<std::shared_ptr<sys::stat_uint_t>>(gbuffer->getActLevels());
-        auto gbuffer_psum_reads = std::vector<std::shared_ptr<sys::stat_uint_t>>(gbuffer->getActLevels());
-        auto gbuffer_wgt_reads = std::vector<std::shared_ptr<sys::stat_uint_t>>(gbuffer->getWgtLevels());
-        auto gbuffer_out_writes = std::vector<std::shared_ptr<sys::stat_uint_t>>(gbuffer->getActLevels());
-
-        for (int lvl = 0; lvl < gbuffer->getActLevels(); ++lvl) {
-            gbuffer_act_reads[lvl] =
-                    stats.register_uint_t("gbuffer_act_reads." + std::to_string(lvl), 0, sys::AverageTotal);
+        if ( noSource == true )
+        {
+            noSourceDNNs(control);
         }
+        else
+            {
+            // Initialize statistics
+            //std::string filename = arch->name() + gbuffer->filename() + arch->filename() + "_cycles";
+            // Initialize statistics
+            std::string filename = "";
+            auto batch_size = this->FAST_MODE ? 1 : network.getBatchSize();
 
-        for (int lvl = 0; lvl < gbuffer->getActLevels(); ++lvl) {
-            gbuffer_psum_reads[lvl] =
-                    stats.register_uint_t("gbuffer_psum_reads." + std::to_string(lvl), 0, sys::AverageTotal);
-        }
+            if (RowConfig == true && ColConfig == true) {
+                filename = "full_Config_" + arch->name() + "_" + network.getName() + arch->filename() + "_BatchSize" +
+                           to_string(batch_size) + "_cycles";
+            } else if (RowConfig == true && ColConfig == false) {
+                filename = "ROW_Config_" + arch->name() + "_" + network.getName() + arch->filename() + "_BatchSize_" +
+                        //"gbuffer_act_banks_512_" +
+                        //"gbuffer_act_size_10GB_" +
+                        //"-32_" +
+                        //"-256" +
+                        //"-128" +
+                        //"_only 32" +
+                        //"min_Lanes_first_" +
+                       // "_withoutConflict" +
+                         "_act_bank_width_4096" +
+                        "_BetterDRAM" +
+                           to_string(batch_size) + "_cycles";
+            } else if (RowConfig == false && ColConfig == true) {
+                filename = "Column_Config_" + arch->name() + "_" + network.getName() + arch->filename() + "_BatchSize" +
+                           to_string(batch_size) + "_cycles";
+            } else if (RowConfig == false && ColConfig == false) {
+                filename = "Baseline_" + arch->name() + "_" + network.getName() + arch->filename() + "_BatchSize" +
+                           to_string(batch_size) + "_cycles_8MB"
+                           //+ "_withoutConflict"
+                           //+ "KxKy"
+                           ;
+            }
 
-        for (int lvl = 0; lvl < gbuffer->getWgtLevels(); ++lvl) {
-            gbuffer_wgt_reads[lvl] =
-                    stats.register_uint_t("gbuffer_wgt_reads." + std::to_string(lvl), 0, sys::AverageTotal);
-        }
 
-        for (int lvl = 0; lvl < gbuffer->getActLevels(); ++lvl) {
-            gbuffer_out_writes[lvl] =
-                    stats.register_uint_t("gbuffer_out_writes." + std::to_string(lvl), 0, sys::AverageTotal);
-        }
+            sys::Stats stats = sys::Stats(network.getNumLayers(), batch_size, filename);
 
-        auto gbuffer_act_bank_conflicts = std::vector<std::shared_ptr<sys::stat_uint_t>>(gbuffer->getActLevels());
-        auto gbuffer_psum_bank_conflicts = std::vector<std::shared_ptr<sys::stat_uint_t>>(gbuffer->getActLevels());
-        auto gbuffer_wgt_bank_conflicts = std::vector<std::shared_ptr<sys::stat_uint_t>>(gbuffer->getWgtLevels());
-        auto gbuffer_out_bank_conflicts = std::vector<std::shared_ptr<sys::stat_uint_t>>(gbuffer->getActLevels());
 
-        for (int lvl = 0; lvl < gbuffer->getActLevels(); ++lvl) {
-            gbuffer_act_bank_conflicts[lvl] =
-                    stats.register_uint_t("gbuffer_act_bank_conflicts." + std::to_string(lvl), 0, sys::AverageTotal);
-        }
+            // Time stats
+            auto cycles = stats.register_uint_t("cycles", 0, sys::AverageTotal);
+            auto compute_cycles = stats.register_uint_t("compute_cycles", 0, sys::AverageTotal);
 
-        for (int lvl = 0; lvl < gbuffer->getActLevels(); ++lvl) {
-            gbuffer_psum_bank_conflicts[lvl] =
-                    stats.register_uint_t("gbuffer_psum_bank_conflicts." + std::to_string(lvl), 0, sys::AverageTotal);
-        }
+            // Architecture stats
+            auto scheduled_pe = stats.register_uint_t("scheduled PEs", 0, sys::AverageTotal);
+            auto idle_pe = stats.register_uint_t("idle PEs", 0, sys::AverageTotal);
+            //auto idle_lanes = stats.register_uint_t("idle Lanes", 0, sys::AverageTotal);
 
-        for (int lvl = 0; lvl < gbuffer->getWgtLevels(); ++lvl) {
-            gbuffer_wgt_bank_conflicts[lvl] =
-                    stats.register_uint_t("gbuffer_wgt_bank_conflicts." + std::to_string(lvl), 0, sys::AverageTotal);
-        }
+            // DRAM stats
+            auto dram_act_reads = stats.register_uint_t("dram_act_reads", 0, sys::AverageTotal);
+            auto dram_psum_reads = stats.register_uint_t("dram_psum_reads", 0, sys::AverageTotal);
+            auto dram_wgt_reads = stats.register_uint_t("dram_wgt_reads", 0, sys::AverageTotal);
+            auto dram_out_writes = stats.register_uint_t("dram_out_writes", 0, sys::AverageTotal);
 
-        for (int lvl = 0; lvl < gbuffer->getActLevels(); ++lvl) {
-            gbuffer_out_bank_conflicts[lvl] =
-                    stats.register_uint_t("gbuffer_out_bank_conflicts." + std::to_string(lvl), 0, sys::AverageTotal);
-        }
+            // Global Buffer stats
+            auto gbuffer_act_reads = std::vector<std::shared_ptr<sys::stat_uint_t>>(gbuffer->getActLevels());
+            auto gbuffer_psum_reads = std::vector<std::shared_ptr<sys::stat_uint_t>>(gbuffer->getActLevels());
+            auto gbuffer_wgt_reads = std::vector<std::shared_ptr<sys::stat_uint_t>>(gbuffer->getWgtLevels());
+            auto gbuffer_out_writes = std::vector<std::shared_ptr<sys::stat_uint_t>>(gbuffer->getActLevels());
 
-        auto act_precision = stats.register_uint_t("activations precision", 0, sys::Average);
-        auto wgt_precision = stats.register_uint_t("weights precision", 0, sys::Average);
+            for (int lvl = 0; lvl < gbuffer->getActLevels(); ++lvl) {
+                gbuffer_act_reads[lvl] =
+                        stats.register_uint_t("gbuffer_act_reads." + std::to_string(lvl), 0, sys::AverageTotal);
+            }
 
-        // Iterate over the samples
-        for(auto sample = 0; sample < batch_size; ++sample) {
+            for (int lvl = 0; lvl < gbuffer->getActLevels(); ++lvl) {
+                gbuffer_psum_reads[lvl] =
+                        stats.register_uint_t("gbuffer_psum_reads." + std::to_string(lvl), 0, sys::AverageTotal);
+            }
 
-            // Iterate over the layers
-            for (auto layer_it = 0; layer_it < network.getNumLayers(); ++layer_it) {
+            for (int lvl = 0; lvl < gbuffer->getWgtLevels(); ++lvl) {
+                gbuffer_wgt_reads[lvl] =
+                        stats.register_uint_t("gbuffer_wgt_reads." + std::to_string(lvl), 0, sys::AverageTotal);
+            }
 
-                const base::Layer<T> &layer = network.getLayers()[layer_it];
-                bool conv = layer.getType() == "Convolution";
-                bool rnn = layer.getType() == "RNN";
-                bool fc = layer.getType() == "InnerProduct";
+            for (int lvl = 0; lvl < gbuffer->getActLevels(); ++lvl) {
+                gbuffer_out_writes[lvl] =
+                        stats.register_uint_t("gbuffer_out_writes." + std::to_string(lvl), 0, sys::AverageTotal);
+            }
 
-                if (!QUIET) printf("Simulating sample: %d/%lu for layer: %s\n", sample + 1, batch_size,
-                        layer.getName().c_str());
+            auto gbuffer_act_bank_conflicts = std::vector<std::shared_ptr<sys::stat_uint_t>>(gbuffer->getActLevels());
+            auto gbuffer_psum_bank_conflicts = std::vector<std::shared_ptr<sys::stat_uint_t>>(gbuffer->getActLevels());
+            auto gbuffer_wgt_bank_conflicts = std::vector<std::shared_ptr<sys::stat_uint_t>>(gbuffer->getWgtLevels());
+            auto gbuffer_out_bank_conflicts = std::vector<std::shared_ptr<sys::stat_uint_t>>(gbuffer->getActLevels());
 
-                auto act = std::make_shared<base::Array<T>>(layer.getActivations());
-                arch->dataConversion(*act);
-                if (fc && act->getDimensions() == 4) act->reshape_to_2D();
-                if (act->getDimensions() == 2) act->reshape_to_4D();
-                act->get_sample(sample);
+            for (int lvl = 0; lvl < gbuffer->getActLevels(); ++lvl) {
+                gbuffer_act_bank_conflicts[lvl] =
+                        stats.register_uint_t("gbuffer_act_bank_conflicts." + std::to_string(lvl), 0,
+                                              sys::AverageTotal);
+            }
 
-                auto wgt = std::make_shared<base::Array<T>>(layer.getWeights());
-                arch->dataConversion(*wgt);
-                if (wgt->getDimensions() == 2) wgt->reshape_to_4D();
+            for (int lvl = 0; lvl < gbuffer->getActLevels(); ++lvl) {
+                gbuffer_psum_bank_conflicts[lvl] =
+                        stats.register_uint_t("gbuffer_psum_bank_conflicts." + std::to_string(lvl), 0,
+                                              sys::AverageTotal);
+            }
 
-                int padding = layer.getPadding();
-                int stride = layer.getStride();
+            for (int lvl = 0; lvl < gbuffer->getWgtLevels(); ++lvl) {
+                gbuffer_wgt_bank_conflicts[lvl] =
+                        stats.register_uint_t("gbuffer_wgt_bank_conflicts." + std::to_string(lvl), 0,
+                                              sys::AverageTotal);
+            }
 
-                if (conv) act->zero_pad(padding);
+            for (int lvl = 0; lvl < gbuffer->getActLevels(); ++lvl) {
+                gbuffer_out_bank_conflicts[lvl] =
+                        stats.register_uint_t("gbuffer_out_bank_conflicts." + std::to_string(lvl), 0,
+                                              sys::AverageTotal);
+            }
 
-                if (act->getShape()[1] == 3 && stride > 1) {
-                    act->reshape_first_layer_act(stride);
-                    wgt->reshape_first_layer_wgt(stride);
-                    stride = 1;
-                }
+            auto act_precision = stats.register_uint_t("activations precision", 0, sys::Average);
+            auto wgt_precision = stats.register_uint_t("weights precision", 0, sys::Average);
 
-                const std::vector<size_t> &act_shape = act->getShape();
-                const std::vector<size_t> &wgt_shape = wgt->getShape();
+            auto activation_channel = stats.register_uint_t("activations channel(N)", 0, sys::Average);
+//        auto weigth_channel = stats.register_uint_t("weights channel(N)", 0, sys::Average);
 
-                uint64_t Nx, Ny;
-                if (rnn) {
-                    Nx = 1;
-                    Ny = 1;
-                } else {
-                    Nx = act_shape[2];
-                    Ny = act_shape[3];
-                }
+            auto outputWindows = stats.register_uint_t("Output Windows (M)", 0, sys::Average);
 
-                auto num_filters = wgt_shape[0];
-                auto Kx = wgt_shape[2];
-                auto Ky = wgt_shape[3];
+            auto number_filters = stats.register_uint_t("filter numbers(R)", 0, sys::Average);
 
-                auto Ox = (Nx - Kx) / stride + 1;
-                auto Oy = (Ny - Ky) / stride + 1;
+            auto lanes = stats.register_uint_t("LANES", 0, sys::Average);
+            auto columns = stats.register_uint_t("COLUMNS", 0, sys::Average);
+            auto rows = stats.register_uint_t("ROWS", 0, sys::Average);
 
-                auto act_prec = layer.getActPrecision();
-                auto wgt_prec = layer.getWgtPrecision();
-                control->configure_layer(act, wgt, act_prec, wgt_prec, fc || rnn, rnn, stride);
+            auto Kxw = stats.register_uint_t("Kx", 0, sys::Average);
+            auto Kyw = stats.register_uint_t("Ky", 0, sys::Average);
 
-                OutputTensor sim_output = OutputTensor(num_filters, std::vector<std::vector<double>>(Ox,
-                        std::vector<double>(Oy, 0)));
+            //Paria-all computes
+            auto computeNumbers = stats.register_uint_t("computeNumbers", 0, sys::AverageTotal);
+            auto allPEclocked = stats.register_uint_t("allPEclocked", 0, sys::AverageTotal);
 
-                Pipeline<T> pipeline = Pipeline<T>(Stage::Last + 1);
-                do {
+            // Iterate over the samples
+            for (auto sample = 0; sample < batch_size; ++sample) {
 
-                    gbuffer->evict_data(control->getIfEvictAct(), control->getIfEvictOut(), control->getIfEvictWgt());
-                    dram->read_data(control->getReadActAddresses(), control->getReadPsumAddresses(),
-                            control->getReadWgtAddresses());
+                // Iterate over the layers
+                for (auto layer_it = 0; layer_it < network.getNumLayers(); ++layer_it) {
 
-                    auto init_data = TilesData<T>(arch->getTiles());
-                    bool still_data = control->still_on_chip_data(init_data);
-                    if (still_data) {
-                        if (this->CHECK) calculate_output(sim_output, init_data);
-                        dram->read_request(init_data, control->getIfLayerActOnChip());
-                        pipeline.fetch_data(init_data);
+                    const base::Layer<T> &layer = network.getLayers()[layer_it];
+                    bool conv = layer.getType() == "Convolution";
+                    bool rnn = layer.getType() == "RNN";
+                    bool fc = layer.getType() == "InnerProduct";
+
+                    if (!QUIET)
+                        printf("\n Simulating sample: %d/%lu for layer: %s\n", sample + 1, batch_size,
+                               layer.getName().c_str());
+
+                    auto act = std::make_shared<base::Array<T>>(layer.getActivations());
+                    arch->dataConversion(*act);
+                    if (fc && act->getDimensions() == 4) act->reshape_to_2D();
+                    if (act->getDimensions() == 2) act->reshape_to_4D();
+                    act->get_sample(sample);
+
+                    auto wgt = std::make_shared<base::Array<T>>(layer.getWeights());
+                    arch->dataConversion(*wgt);
+
+                    if (!((network.getName() == "vgg_cnn_m_2048" || (arch->name() == "ShapeShifter")) && !conv )) {
+                        if (wgt->getDimensions() == 2) wgt->reshape_to_4D();
+                    }
+                    int padding = layer.getPadding();
+                    int stride = layer.getStride();
+
+                    if (conv) act->zero_pad(padding);
+
+                    if (act->getShape()[1] == 3 && stride > 1) {
+                        act->reshape_first_layer_act(stride);
+                        wgt->reshape_first_layer_wgt(stride);
+                        stride = 1;
                     }
 
-                    while(still_data || !pipeline.isEmpty()) {
+                    //KxKy
+                   // wgt->reshape_layer_wgt(stride);
 
-                        if (pipeline.isValid(WRITEBACK_III) && gbuffer->write_done()) {
-                            obuffer->erase();
-                            pipeline.end_stage(WRITEBACK_III);
+
+                    const std::vector<size_t> &act_shape = act->getShape();
+                    const std::vector<size_t> &wgt_shape = wgt->getShape();
+
+                    /*
+                    uint64_t Nx, Ny;
+                    if (rnn) {
+                        Nx = 1;
+                        Ny = 1;
+                    } else {
+                        Nx = act_shape[2];
+                        Ny = act_shape[3];
+                    }
+                    */
+
+                    //chon act_channels mikhastam ino az potential avordam
+                    uint64_t act_channels, Nx, Ny;
+                    if (rnn) {
+                        act_channels = act_shape[2];
+                        Nx = 1;
+                        Ny = 1;
+                    } else {
+                        act_channels = act_shape[1];
+                        Nx = act_shape[2];
+                        Ny = act_shape[3];
+                    }
+
+                    auto num_filters = wgt_shape[0];
+                    auto wgt_channels = wgt_shape[1];
+                    if (wgt_channels != act_channels)
+                        throw std::runtime_error("wgt_channels are not equal to act_channels");
+                    auto Kx = wgt_shape[2];
+                    auto Ky = wgt_shape[3];
+
+
+                    //KxKy //Dr goft biar tooye formul
+                   // {
+                      //  wgt_channels = wgt_channels * Kx * Ky;
+                       // Kx = 1;
+                      //  Ky = 1;
+                    //}
+
+                    auto Ox = (Nx - Kx) / stride + 1;
+                    auto Oy = (Ny - Ky) / stride + 1;
+
+                    auto act_prec = layer.getActPrecision();
+                    auto wgt_prec = layer.getWgtPrecision();
+
+                    //control->configure_layer(N_LANES, N_COLUMNS, N_ROWS, act, wgt, act_prec, wgt_prec, fc || rnn, rnn, stride);
+
+                    //Paria
+                    auto output_windows = Ox * Oy;
+                    if (RowConfig == true || ColConfig == true)
+                    {
+
+                        bool depthwise = wgt_shape[1] == 1 && act_channels != 1;
+
+                        if (!depthwise) {
+
+                            arch->pariaApproach(act_channels, output_windows, num_filters, layer_it, RowConfig, ColConfig);
                         }
+                    }
+                    //Paria
+                    if ((network.getName() == "vgg_cnn_m_2048"
+                     || (arch->name() == "ShapeShifter")
+                    ) && !conv ) {
+                        // Dump stats
+                        compute_cycles->value[layer_it][sample] =
+                                ceil((float) num_filters / (arch->getRows() * arch->getTiles())) * //ROW
+                                ceil((float) output_windows / arch->getColumns()) * //Columnn
+                                ceil((float) act_channels / arch->getLanes()) * Kx * Ky;
 
-                        if (pipeline.isValid(WRITEBACK_II) && pipeline.isFree(WRITEBACK_III) && obuffer->write_done()) {
-                            const auto &tiles_data = pipeline.getData(WRITEBACK_II);
-                            gbuffer->write_request(tiles_data);
-                            pipeline.move_stage(WRITEBACK_II);
-                        }
+                        number_filters->value[layer_it][sample] = num_filters;
 
-                        if (pipeline.isValid(WRITEBACK_I) && pipeline.isFree(WRITEBACK_II) && arch->flush()) {
-                            const auto &tiles_data = pipeline.getData(WRITEBACK_I);
-                            auto delay = composer->calculate_delay(tiles_data);
-                            obuffer->write_request(delay);
-                            obuffer->insert();
-                            pipeline.move_stage(WRITEBACK_I);
-                        }
+                        activation_channel->value[layer_it][sample] = wgt_channels;
+                        //weigth_channel->value[layer_it][image] = wgt_channels;
 
-                        if (pipeline.isValid(EXECUTION) && obuffer->isFree() && abuffer->data_ready() &&
-                                pbuffer->data_ready() && wbuffer->data_ready() && arch->ready()) {
-                            const auto &tiles_data = pipeline.getData(EXECUTION);
-                            arch->process_tiles(tiles_data);
-                            abuffer->erase(tiles_data->read_act);
-                            pbuffer->erase(tiles_data->read_psum);
-                            wbuffer->erase(tiles_data->read_wgt);
-                            if (control->check_if_write_output(tiles_data)) pipeline.move_stage(EXECUTION);
-                            else pipeline.end_stage(EXECUTION);
-                        }
+                        outputWindows->value[layer_it][sample] = output_windows;
 
-                        if (pipeline.isValid(MEMORY_II) && pipeline.isFree(EXECUTION) && gbuffer->data_ready()) {
-                            const auto &tiles_data = pipeline.getData(MEMORY_II);
-                            abuffer->read_request(tiles_data->read_act);
-                            pbuffer->read_request(tiles_data->read_psum);
-                            wbuffer->read_request(tiles_data->read_wgt);
-                            pipeline.move_stage(MEMORY_II);
-                        }
+                        lanes->value[layer_it][sample] = arch->getLanes();
+                        columns->value[layer_it][sample] = arch->getColumns();
+                        rows->value[layer_it][sample] = arch->getRows();
+                        Kxw->value[layer_it][sample] = Kx;
+                        Kyw->value[layer_it][sample] = Ky;
 
-                        if (pipeline.isValid(MEMORY_I) && dram->data_ready() && abuffer->isFree() && pbuffer->isFree()
-                                && wbuffer->isFree()) {
-                            const auto &tiles_data = pipeline.getData(MEMORY_I);
-                            gbuffer->act_read_request(tiles_data, control->getIfLayerActOnChip(), tiles_data->read_act);
-                            gbuffer->psum_read_request(tiles_data, tiles_data->read_psum);
-                            gbuffer->wgt_read_request(tiles_data, tiles_data->read_wgt);
-                            abuffer->insert(tiles_data->read_act);
-                            pbuffer->insert(tiles_data->read_psum);
-                            wbuffer->insert(tiles_data->read_wgt);
-                            pipeline.move_stage(MEMORY_I);
-                        }
+                        //paria
+                        computeNumbers->value[layer_it][sample] = output_windows * num_filters * act_channels * Kx * Ky;
+                        allPEclocked->value[layer_it][sample] = arch->getallPEsclocked();
 
-                        control->cycle();
+                        //idle_pe->value[layer_it][sample] = arch->UnusedPEs(act_channels, output_windows, num_filters, Kx, Ky);
+                        idle_pe->value[layer_it][sample] = arch->UnusedPEsandTiles(act_channels, output_windows, num_filters, Kx, Ky);
+                    } else {
 
-                        if (pipeline.isFree(MEMORY_I) && still_data) {
-                            auto next_data = TilesData<T>(arch->getTiles());
-                            still_data = control->still_on_chip_data(next_data);
+                        control->configure_layer(act, wgt, act_prec, wgt_prec, fc || rnn, rnn, stride);
+
+                        OutputTensor sim_output = OutputTensor(num_filters, std::vector<std::vector<double>>(Ox,
+                                                                                                             std::vector<double>(
+                                                                                                                     Oy,
+                                                                                                                     0)));
+
+                        Pipeline<T> pipeline = Pipeline<T>(Stage::Last + 1);
+                        do {
+                            gbuffer->evict_data(control->getIfEvictAct(), control->getIfEvictOut(),
+                                                control->getIfEvictWgt());
+                            dram->read_data(control->getReadActAddresses(), control->getReadPsumAddresses(),
+                                            control->getReadWgtAddresses());
+
+                            auto init_data = TilesData<T>(arch->getTiles());
+                            bool still_data = control->still_on_chip_data(init_data);
                             if (still_data) {
-                                if (this->CHECK) calculate_output(sim_output, next_data);
-                                dram->read_request(next_data, control->getIfLayerActOnChip());
-                                pipeline.fetch_data(next_data);
+                                if (this->CHECK) calculate_output(sim_output, init_data);
+                                dram->read_request(init_data, control->getIfLayerActOnChip());
+                                pipeline.fetch_data(init_data);
                             }
+
+                            while (still_data || !pipeline.isEmpty()) {
+
+                                if (pipeline.isValid(WRITEBACK_III) && gbuffer->write_done()) {
+                                    obuffer->erase();
+                                    pipeline.end_stage(WRITEBACK_III);
+                                }
+
+                                if (pipeline.isValid(WRITEBACK_II) && pipeline.isFree(WRITEBACK_III) &&
+                                    obuffer->write_done()) {
+                                    const auto &tiles_data = pipeline.getData(WRITEBACK_II);
+                                    gbuffer->write_request(tiles_data);
+                                    pipeline.move_stage(WRITEBACK_II);
+                                }
+
+                                if (pipeline.isValid(WRITEBACK_I) && pipeline.isFree(WRITEBACK_II) && arch->flush()) {
+                                    const auto &tiles_data = pipeline.getData(WRITEBACK_I);
+                                    auto delay = composer->calculate_delay(tiles_data);
+                                    obuffer->write_request(delay);
+                                    obuffer->insert();
+                                    pipeline.move_stage(WRITEBACK_I);
+                                }
+
+                                if (pipeline.isValid(EXECUTION) && obuffer->isFree() && abuffer->data_ready() &&
+                                    pbuffer->data_ready() && wbuffer->data_ready() && arch->ready()) {
+                                    const auto &tiles_data = pipeline.getData(EXECUTION);
+                                    arch->process_tiles(tiles_data);
+                                    abuffer->erase(tiles_data->read_act);
+                                    pbuffer->erase(tiles_data->read_psum);
+                                    wbuffer->erase(tiles_data->read_wgt);
+                                    if (control->check_if_write_output(tiles_data)) pipeline.move_stage(EXECUTION);
+                                    else pipeline.end_stage(EXECUTION);
+                                }
+
+                                if (pipeline.isValid(MEMORY_II) && pipeline.isFree(EXECUTION) &&
+                                    gbuffer->data_ready()) {
+                                    const auto &tiles_data = pipeline.getData(MEMORY_II);
+                                    abuffer->read_request(tiles_data->read_act);
+                                    pbuffer->read_request(tiles_data->read_psum);
+                                    wbuffer->read_request(tiles_data->read_wgt);
+                                    pipeline.move_stage(MEMORY_II);
+                                }
+
+                                if (pipeline.isValid(MEMORY_I) && dram->data_ready() && abuffer->isFree() &&
+                                    pbuffer->isFree()
+                                    && wbuffer->isFree()) {
+                                    const auto &tiles_data = pipeline.getData(MEMORY_I);
+                                    gbuffer->act_read_request(tiles_data, control->getIfLayerActOnChip(),
+                                                              tiles_data->read_act);
+                                    gbuffer->psum_read_request(tiles_data, tiles_data->read_psum);
+                                    gbuffer->wgt_read_request(tiles_data, tiles_data->read_wgt);
+                                    abuffer->insert(tiles_data->read_act);
+                                    pbuffer->insert(tiles_data->read_psum);
+                                    wbuffer->insert(tiles_data->read_wgt);
+                                    pipeline.move_stage(MEMORY_I);
+                                }
+
+                                control->cycle();//global_cycle++
+
+                                if (pipeline.isFree(MEMORY_I) && still_data) {
+                                    auto next_data = TilesData<T>(arch->getTiles());
+                                    still_data = control->still_on_chip_data(next_data);
+                                    if (still_data) {
+                                        if (this->CHECK) calculate_output(sim_output, next_data);
+                                        dram->read_request(next_data, control->getIfLayerActOnChip());
+                                        pipeline.fetch_data(next_data);
+                                    }
+                                }
+
+                            }
+
+                            ppu->calculate_delay(
+                                    control->calculate_outputs());//post proccessing unit //Number of inputs in parallel:
+                            dram->write_data(control->getWriteAddresses());
+
+                        } while (control->still_off_chip_data());
+
+                        //Paria
+                        //arch->UnusedLanes(act_channels, output_windows, num_filters, Kx, Ky);
+
+                        if (CHECK) check_result(sim_output, act, wgt, Ox, Oy, stride, rnn, arch->diffy());
+
+                        // Dump stats
+                        cycles->value[layer_it][sample] = control->getCycles();
+                        compute_cycles->value[layer_it][sample] = arch->getCycles();
+
+                        scheduled_pe->value[layer_it][sample] = arch->getScheduledPe();
+                        //idle_pe->value[layer_it][sample] = arch->getIdlePe();
+                            idle_pe->value[layer_it][sample] = arch->UnusedPEsandTiles(act_channels, output_windows,
+                                    num_filters, Kx, Ky);//ghablan pe haye idle dar tile haye idle ra hesab nemikard ke man umadam barash ye function neveshtam
+                                    //vali mishe in kar ro kard ke tedad cycleha ro dar abade accelerator zarb kard. injoori kole pe haii ke dare kelak mikhore be dast miad
+                                    //bad scheduled ha ro az un kam kard
+                        //idle_lanes->value[layer_it][sample] = arch->getIdleLane();
+
+                        dram_act_reads->value[layer_it][sample] = dram->getActReads();
+                        dram_psum_reads->value[layer_it][sample] = dram->getPsumReads();
+                        dram_wgt_reads->value[layer_it][sample] = dram->getWgtReads();
+                        dram_out_writes->value[layer_it][sample] = dram->getOutWrites();
+
+                        for (int lvl = 0; lvl < gbuffer->getActLevels(); ++lvl) {
+                            gbuffer_act_reads[lvl]->value[layer_it][sample] = gbuffer->getActReads(lvl);
+                            gbuffer_psum_reads[lvl]->value[layer_it][sample] = gbuffer->getPsumReads(lvl);
+                            gbuffer_out_writes[lvl]->value[layer_it][sample] = gbuffer->getOutWrites(lvl);
+
+                            gbuffer_act_bank_conflicts[lvl]->value[layer_it][sample] = gbuffer->getActBankConflicts(
+                                    lvl);
+                            gbuffer_psum_bank_conflicts[lvl]->value[layer_it][sample] = gbuffer->getPsumBankConflicts(
+                                    lvl);
+                            gbuffer_out_bank_conflicts[lvl]->value[layer_it][sample] = gbuffer->getOutBankConflicts(
+                                    lvl);
+                        }
+
+                        for (int lvl = 0; lvl < gbuffer->getWgtLevels(); ++lvl) {
+                            gbuffer_wgt_reads[lvl]->value[layer_it][sample] = gbuffer->getWgtReads(lvl);
+                            gbuffer_wgt_bank_conflicts[lvl]->value[layer_it][sample] = gbuffer->getWgtBankConflicts(
+                                    lvl);
+                        }
+
+                        act_precision->value[layer_it][sample] = act_prec;
+                        wgt_precision->value[layer_it][sample] = wgt_prec;
+
+                        number_filters->value[layer_it][sample] = num_filters;
+
+                        activation_channel->value[layer_it][sample] = wgt_channels;
+                        //weigth_channel->value[layer_it][image] = wgt_channels;
+
+                        outputWindows->value[layer_it][sample] = output_windows;
+
+                        lanes->value[layer_it][sample] = arch->getLanes();
+                        columns->value[layer_it][sample] = arch->getColumns();
+                        rows->value[layer_it][sample] = arch->getRows();
+                        Kxw->value[layer_it][sample] = Kx;
+                        Kyw->value[layer_it][sample] = Ky;
+
+                        //paria
+                        computeNumbers->value[layer_it][sample] = output_windows * num_filters * act_channels * Kx * Ky;
+                        allPEclocked->value[layer_it][sample] = arch->getallPEsclocked();
+
+
+                        arch->UnusedPEs(act_channels, output_windows, num_filters, Kx, Ky);
+                        if (arch->idle_PE_PARIA != (double) arch->getIdlePe())
+                        {
+                            printf("\n IDLE_PE scheduling is wrong");
                         }
 
                     }
+                    //Paria back to defult dimention size
+                    arch->LANES = primaryLane;
+                    arch->COLUMNS = primaryColumn;
+                    arch->ROWS = primaryRow;
 
-                    ppu->calculate_delay(control->calculate_outputs());
-                    dram->write_data(control->getWriteAddresses());
+                } // Layer
 
-                } while(control->still_off_chip_data());
+            } // Sample
 
-                if (CHECK) check_result(sim_output, act, wgt, Ox, Oy, stride, rnn, arch->diffy());
+            //Dump statistics
+            std::string header = arch->name() + " Number of Cycles for " + network.getName() + "\n";
+            header += "Dataflow: " + control->dataflow() + "\n";
+            header += "--> DRAM: \n" + dram->header();
+            header += "--> Global Buffer: \n" + gbuffer->header();
+            header += "--> Activation Buffer: \n" + abuffer->header();
+            header += "--> Partial Sum Buffer: \n" + pbuffer->header();
+            header += "--> Weight Buffer: \n" + wbuffer->header();
+            header += "--> Output Buffer: \n" + obuffer->header();
+            header += "--> Composer: \n" + composer->header();
+            header += "--> Post-Processing Unit: \n" + ppu->header();
+            header += "--> Architecture: \n" + arch->header();
 
-                // Dump stats
-                cycles->value[layer_it][sample] = control->getCycles();
-                compute_cycles->value[layer_it][sample] = arch->getCycles();
-
-                scheduled_pe->value[layer_it][sample] = arch->getScheduledPe();
-                idle_pe->value[layer_it][sample] = arch->getIdlePe();
-
-                dram_act_reads->value[layer_it][sample] = dram->getActReads();
-                dram_psum_reads->value[layer_it][sample] = dram->getPsumReads();
-                dram_wgt_reads->value[layer_it][sample] = dram->getWgtReads();
-                dram_out_writes->value[layer_it][sample] = dram->getOutWrites();
-
-                for (int lvl = 0; lvl < gbuffer->getActLevels(); ++lvl) {
-                    gbuffer_act_reads[lvl]->value[layer_it][sample] = gbuffer->getActReads(lvl);
-                    gbuffer_psum_reads[lvl]->value[layer_it][sample] = gbuffer->getPsumReads(lvl);
-                    gbuffer_out_writes[lvl]->value[layer_it][sample] = gbuffer->getOutWrites(lvl);
-
-                    gbuffer_act_bank_conflicts[lvl]->value[layer_it][sample] = gbuffer->getActBankConflicts(lvl);
-                    gbuffer_psum_bank_conflicts[lvl]->value[layer_it][sample] = gbuffer->getPsumBankConflicts(lvl);
-                    gbuffer_out_bank_conflicts[lvl]->value[layer_it][sample] = gbuffer->getOutBankConflicts(lvl);
-                }
-
-                for (int lvl = 0; lvl < gbuffer->getWgtLevels(); ++lvl) {
-                    gbuffer_wgt_reads[lvl]->value[layer_it][sample] = gbuffer->getWgtReads(lvl);
-                    gbuffer_wgt_bank_conflicts[lvl]->value[layer_it][sample] = gbuffer->getWgtBankConflicts(lvl);
-                }
-
-                act_precision->value[layer_it][sample] = act_prec;
-                wgt_precision->value[layer_it][sample] = wgt_prec;
-
-            } // Layer
-
-        } // Sample
-
-        //Dump statistics
-        std::string header = arch->name() + " Number of Cycles for " + network.getName() + "\n";
-        header += "Dataflow: " + control->dataflow() + "\n";
-        header += "--> DRAM: \n" + dram->header();
-        header += "--> Global Buffer: \n" + gbuffer->header();
-        header += "--> Activation Buffer: \n" + abuffer->header();
-        header += "--> Partial Sum Buffer: \n" + pbuffer->header();
-        header += "--> Weight Buffer: \n" + wbuffer->header();
-        header += "--> Output Buffer: \n" + obuffer->header();
-        header += "--> Composer: \n" + composer->header();
-        header += "--> Post-Processing Unit: \n" + ppu->header();
-        header += "--> Architecture: \n" + arch->header();
-
-        stats.dump_csv(network.getName(), network.getLayersName(), header, QUIET);
+            //stats.dump_csv(network.getName(), network.getLayersName(), header, QUIET);
+            stats.dump_csv(network.getName(), network.getLayersName(), header + arch->header(), arch->name(), QUIET);
+        }
     }
+
+
 
     /* POTENTIALS */
 
@@ -443,6 +607,11 @@ namespace core {
             bool conv = layer.getType() == "Convolution";
             bool rnn = layer.getType() == "RNN";
             bool fc = layer.getType() == "InnerProduct";
+
+            //Paria
+            if (!conv && (network.getName() == "vgg_cnn_s" || network.getName() == "vgg_cnn_m_2048"  || network.getName() == "AlexNet")) {
+                continue;
+            }
 
             if (!QUIET) std::cout << "Simulating layer: " << layer.getName() << std::endl;
 
@@ -571,7 +740,43 @@ namespace core {
 
         //Dump statistics
         std::string header = arch->name() + " Potentials/Work Reduction for " + network.getName() + "\n";
-        stats.dump_csv(network.getName(), network.getLayersName(), header + arch->header_pot(), QUIET);
+        stats.dump_csv(network.getName(), network.getLayersName(), header, network.getName(), this->QUIET);
+
+    }
+
+    template <typename T>
+    void calculate_output(OutputTensor &output, const TilesData<T> &tiles_data) {
+
+        for (const auto &tile_data : tiles_data.data) {
+
+            if (!tile_data.valid)
+                continue;
+
+            for (int w = 0; w < tile_data.windows.size(); ++w) {
+                auto window_idx = w * tile_data.lanes;
+                auto x_window = std::get<0>(tile_data.windows[w]);
+                auto y_window = std::get<1>(tile_data.windows[w]);
+
+                for (int f = 0; f < tile_data.filters.size(); ++f) {
+                    auto filter_idx = f * tile_data.lanes;
+                    auto filter = tile_data.filters[f];
+
+                    for (int lane = 0; lane < tile_data.lanes; ++lane) {
+
+                        auto wgt_bits = std::get<0>(tile_data.wgt_row[filter_idx + lane]);
+                        auto time_h = (std::get<1>(tile_data.wgt_row[filter_idx + lane]) - tile_data.time);
+                        auto lane_d = std::get<2>(tile_data.wgt_row[filter_idx + lane]);
+
+                        if (time_h < 0) continue;
+
+                        auto act_bits = std::get<0>(tile_data.act_row[time_h][window_idx + lane_d]);
+
+                        output[filter][x_window][y_window] += act_bits * wgt_bits;
+
+                    } // Multiply 16 weights and 16 activations values
+                } // Filter
+            } // Window
+        } // Tiles
 
     }
 
