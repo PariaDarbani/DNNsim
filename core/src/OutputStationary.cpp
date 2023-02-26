@@ -237,7 +237,7 @@ namespace core {
 
         // Addresses buffer
         auto accesses_per_filter = (uint64_t)ceil(this->EF_LANES / (double)this->dram->getWgtValuesPerBlock())
-                * this->EF_ROWS;
+                * this->EF_ROWS;//har lane ba har bar dastresi be bafer 4(wgt value per block) ta wgt ra mikhanad
         if (this->arch->schedule()) accesses_per_filter += (uint64_t)ceil(this->EF_LANES *
                 this->scheduler->getMetadataBits() / (double)this->dram->getWidth()) * this->EF_ROWS;
         wgt_address_buffer = AddressBuffer(filter_sets * groups, AddressBufferSet(max_buffer_time,
@@ -257,7 +257,7 @@ namespace core {
 
                 // Buffer depth second
                 auto skip_buf = std::vector<int>(tiles, 0);
-                for (int y = 0; y < max_buffer_time; ++y) {
+                for (int y = 0; y < max_buffer_time; ++y) {//Pariasim: 48
 
                     for (int t = 0; t < tiles; ++t) {
 
@@ -443,6 +443,7 @@ namespace core {
             const std::shared_ptr<base::Array<T>> &_wgt, uint32_t act_prec, uint32_t wgt_prec, bool _linear,
             bool _rnn, int _stride) {
 
+        //Control<T>::configure_layer(this->EF_LANES, this->EF_COLUMNS, this->EF_ROWS, _act, _wgt, act_prec, wgt_prec, _linear, _rnn, _stride);
         Control<T>::configure_layer(_act, _wgt, act_prec, wgt_prec, _linear, _rnn, _stride);
 
         group_it = 0;
